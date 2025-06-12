@@ -1,70 +1,50 @@
 import Foundation
 import FoundationModels
-import ArgumentParser
 import Dispatch
 
-enum Defaults {
-    static let stream   = "useStreaming"
-    static let temp     = "temperature"
-    static let system   = "systemInstructions"
-}
-
 @main
-struct ChatCLI: AsyncParsableCommand {
-    @Flag(name: .shortAndLong, help: "Stream responses as they are generated.")
-    var stream = UserDefaults.standard.bool(forKey: Defaults.stream)
+struct ChatCLI {
+    static func main() async throws {
+        // Hard-coded defaults
+        let temperature  = 0.2
+        let sysPrompt    = "You are a helpful assistant."
 
-    @Option(name: .shortAndLong, help: "Sampling temperature 0–2.")
-    var temperature = UserDefaults.standard.double(forKey: Defaults.temp)
-
-    @Option(name: .customLong("sys"), help: "System instructions.")
-    var sys = UserDefaults.standard.string(forKey: Defaults.system) ?? "You are a helpful assistant."
-
-    func run() async throws {
-        // Persist any overrides
-        let defaults = UserDefaults.standard
-        defaults.set(stream,      forKey: Defaults.stream)
-        defaults.set(temperature, forKey: Defaults.temp)
-        defaults.set(sys,         forKey: Defaults.system)
-
-        // Check model availability
+        // Verify model
         let model = SystemLanguageModel.default
         guard model.isAvailable else {
             throw RuntimeError("Model unavailable: \(model.availability)")
         }
 
-        // Session & options
-        let session  = LanguageModelSession(instructions: sys)
-        let options  = GenerationOptions(temperature: temperature)
+        let session = LanguageModelSession(instructions: sysPrompt)
+        let options = GenerationOptions(temperature: temperature)
 
-        print("Apple-Intelligence chat. Type /quit to exit.\n")
+        print("Apple-Intelligence chat (streaming, T=0.2). Type /quit to exit.\n")
 
         while let prompt = readLine(strippingNewline: true) {
             if prompt.isEmpty || prompt == "/quit" { break }
 
-            if stream {
-                // Start streaming task
-                let task = Task {
-                    for try await part in session.streamResponse(to: prompt, options: options) {
-                        FileHandle.standardOutput.write(Data(part.utf8))
+            var previous = ""       // text already printed
+
+            let task = Task {
+                for try await part in session.streamResponse(to: prompt, options: options) {
+                    let delta = part.dropFirst(previous.count) // new characters only
+                    if !delta.isEmpty {
+                        FileHandle.standardOutput.write(Data(delta.utf8))
                         fflush(stdout)
+                        previous = part
                     }
-                    print() // newline when complete
                 }
-
-                // Allow ^C to cancel the running task
-                signal(SIGINT, SIG_IGN)
-                let sigSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-                sigSrc.setEventHandler { task.cancel() }
-                sigSrc.resume()
-                defer { sigSrc.cancel() }
-
-                _ = try await task.value // propagate any errors
-            } else {
-                // One-shot response
-                let response = try await session.respond(to: prompt, options: options)
-                print(response.content)
+                print() // newline when complete
             }
+
+            // ^C cancels the streaming task
+            signal(SIGINT, SIG_IGN)
+            let sigSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+            sigSrc.setEventHandler { task.cancel() }
+            sigSrc.resume()
+            defer { sigSrc.cancel() }
+
+            _ = try await task.value
         }
     }
 }
