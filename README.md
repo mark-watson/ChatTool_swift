@@ -10,3 +10,5 @@ I have been experimenting with a macOS26 Apple Intelligence example chat command
 
     swift build
     swift run
+
+Note: **swift build** puts the executable in: .build/debug/chattool
